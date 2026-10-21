@@ -60,6 +60,9 @@ pub struct TasksTile {
     pub filter_active: bool,
     /// Active issue-type filter (type key, e.g. `bug`).
     pub type_filter: Option<String>,
+    /// Mirrors `Config::hide_closed_tasks`; the display filters honor it so
+    /// the setting can flip without a refetch.
+    pub hide_closed: bool,
     pub loading: bool,
     pub error: Option<String>,
 }
@@ -73,6 +76,7 @@ impl TasksTile {
             filter: TextInput::new(""),
             filter_active: false,
             type_filter: None,
+            hide_closed: true,
             loading: false,
             error: None,
         }
@@ -81,7 +85,11 @@ impl TasksTile {
     /// Distinct issue types among the loaded issues, most frequent first.
     pub fn available_types(&self) -> Vec<(String, String, usize)> {
         let mut counts: HashMap<String, (String, usize)> = HashMap::new();
-        for i in &self.issues {
+        for i in self
+            .issues
+            .iter()
+            .filter(|i| !(self.hide_closed && i.is_closed()))
+        {
             if let Some(t) = &i.issue_type {
                 if t.key.is_empty() {
                     continue;
@@ -112,17 +120,21 @@ impl TasksTile {
         let matcher = SkimMatcherV2::default();
         let pat = self.filter.value.trim().to_string();
         let type_filter = self.type_filter.clone();
-        let type_ok = |i: &Issue| match &type_filter {
-            Some(tf) => i.issue_type.as_ref().is_some_and(|t| t.key == *tf),
-            None => true,
+        let hide_closed = self.hide_closed;
+        let visible = |i: &Issue| {
+            !(hide_closed && i.is_closed())
+                && match &type_filter {
+                    Some(tf) => i.issue_type.as_ref().is_some_and(|t| t.key == *tf),
+                    None => true,
+                }
         };
         if pat.is_empty() {
-            self.filtered = self.issues.iter().filter(|i| type_ok(i)).cloned().collect();
+            self.filtered = self.issues.iter().filter(|i| visible(i)).cloned().collect();
         } else {
             let mut scored: Vec<(i64, Issue)> = self
                 .issues
                 .iter()
-                .filter(|i| type_ok(i))
+                .filter(|i| visible(i))
                 .filter_map(|i| {
                     matcher
                         .fuzzy_match(&format!("{} {}", i.key, i.summary), &pat)
@@ -354,6 +366,8 @@ const LOCAL_MATCH_CAP: usize = 6;
 
 impl App {
     pub fn new(cfg: Config, state: PersistedState, api_tx: mpsc::Sender<AppEvent>) -> Self {
+        let mut tasks = TasksTile::new();
+        tasks.hide_closed = cfg.hide_closed_tasks;
         Self {
             cfg,
             state,
@@ -361,7 +375,7 @@ impl App {
             me: None,
             tab: Tab::Main,
             tile: Tile::Tasks,
-            tasks: TasksTile::new(),
+            tasks,
             cal: CalendarTile::new(),
             log: LogTile::new(),
             settings_sel: 0,
@@ -1362,7 +1376,7 @@ impl App {
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
-        const ROWS: usize = 9;
+        const ROWS: usize = 10;
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.settings_sel = (self.settings_sel + 1).min(ROWS - 1);
@@ -1410,6 +1424,12 @@ impl App {
                 self.save_cfg();
             }
             6 => {
+                self.cfg.hide_closed_tasks = !self.cfg.hide_closed_tasks;
+                self.tasks.hide_closed = self.cfg.hide_closed_tasks;
+                self.tasks.refresh_filter();
+                self.save_cfg();
+            }
+            7 => {
                 if self.cfg.client_id.as_deref().is_none_or(str::is_empty) {
                     self.modals.push(Modal::Error {
                         title: "No client_id".into(),
@@ -1419,7 +1439,7 @@ impl App {
                     self.open_onboarding();
                 }
             }
-            7 => self.modals.push(Modal::Input {
+            8 => self.modals.push(Modal::Input {
                 title: "Paste OAuth token".into(),
                 input: TextInput::new(""),
                 target: InputTarget::ManualToken,
@@ -1986,6 +2006,10 @@ impl App {
             }
             ApiMsg::MyIssues(res) => match res {
                 Ok(mut issues) => {
+                    // closed issues stay in `issues` — hiding is a display
+                    // concern (`hide_closed`), so the setting can flip
+                    // without a refetch, and the dropdowns' local-match
+                    // pool keeps covering them
                     issues.sort_by(|a, b| {
                         let ta = a
                             .updated_at
@@ -2310,5 +2334,45 @@ mod tests {
         t.filter = TextInput::new("");
         t.refresh_filter();
         assert_eq!(t.filtered.len(), 4);
+    }
+
+    #[test]
+    fn hide_closed_setting_controls_visibility() {
+        use crate::api::models::StatusRef;
+        let mk = |key: &str, status: Option<&str>| Issue {
+            key: key.to_string(),
+            summary: format!("sum {key}"),
+            status: status.map(|s| StatusRef {
+                key: s.to_string(),
+                display: Some(s.to_string()),
+            }),
+            ..Default::default()
+        };
+        let mut t = TasksTile::new();
+        t.issues = vec![
+            mk("A", Some("open")),
+            mk("B", Some("done")),
+            mk("C", Some("canceled")),
+            mk("D", Some("devDone")),
+            mk("E", None),
+        ];
+
+        // default: closed hidden from both the list and the type picker
+        t.refresh_filter();
+        assert_eq!(
+            t.filtered.iter().map(|i| i.key.clone()).collect::<Vec<_>>(),
+            ["A", "D", "E"]
+        );
+
+        // toggle off — everything is back, no refetch needed
+        t.hide_closed = false;
+        t.refresh_filter();
+        assert_eq!(t.filtered.len(), 5);
+
+        // closed issues never take over the selection index
+        t.hide_closed = true;
+        t.selected = 4;
+        t.refresh_filter();
+        assert_eq!(t.selected, 2);
     }
 }

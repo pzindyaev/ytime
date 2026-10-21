@@ -80,6 +80,9 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         vec![Line::from(Span::styled(
             if t.issues.is_empty() {
                 "no issues assigned to you — press r to refresh".to_string()
+            } else if t.hide_closed && t.issues.iter().all(|i| i.is_closed()) {
+                "every assigned issue is closed — toggle “Hide closed tasks” in Settings"
+                    .to_string()
             } else {
                 "no matches for the filter".to_string()
             },

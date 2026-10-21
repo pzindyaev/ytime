@@ -97,6 +97,8 @@ pub struct Config {
     pub rounding: RoundingConfig,
     /// Override if auto-detection picks the wrong one.
     pub org_header: Option<OrgHeader>,
+    /// Drop issues in terminal statuses from the My tasks tile.
+    pub hide_closed_tasks: bool,
     pub api_base: String,
     pub oauth_base: String,
 }
@@ -109,6 +111,7 @@ impl Default for Config {
             org_id: None,
             rounding: RoundingConfig::default(),
             org_header: None,
+            hide_closed_tasks: true,
             api_base: "https://api.tracker.yandex.net".to_string(),
             oauth_base: "https://oauth.yandex.ru".to_string(),
         }
@@ -170,6 +173,7 @@ mod tests {
                 mode: RoundingMode::Nearest,
             },
             org_header: Some(OrgHeader::XCloudOrgId),
+            hide_closed_tasks: false,
             ..Config::default()
         };
         let raw = toml::to_string_pretty(&cfg).unwrap();
@@ -179,6 +183,7 @@ mod tests {
         assert_eq!(back.rounding.minutes, 15);
         assert_eq!(back.rounding.mode, RoundingMode::Nearest);
         assert_eq!(back.org_header, Some(OrgHeader::XCloudOrgId));
+        assert!(!back.hide_closed_tasks);
         assert_eq!(back.api_base, "https://api.tracker.yandex.net");
     }
 
@@ -187,5 +192,6 @@ mod tests {
         let cfg: Config = toml::from_str("client_id = \"x\"").unwrap();
         assert_eq!(cfg.client_id.as_deref(), Some("x"));
         assert_eq!(cfg.rounding.minutes, 30);
+        assert!(cfg.hide_closed_tasks);
     }
 }

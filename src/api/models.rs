@@ -57,6 +57,20 @@ pub struct Issue {
 }
 
 impl Issue {
+    /// Whether the issue sits in a terminal status. Tracker lets queues mint
+    /// custom status keys, so the authoritative signal would be
+    /// `GET /v2/statuses` — except custom statuses are frequently created
+    /// without a `type`, which is exactly the case for this org's `done`
+    /// (and `resolution` is set on some mid-workflow statuses too). The
+    /// standard closed keys, matched exactly, are what holds in practice;
+    /// note the single-/double-l spelling split (`canceled`/`cancelled`).
+    pub fn is_closed(&self) -> bool {
+        const CLOSED_KEYS: [&str; 5] = ["done", "closed", "resolved", "canceled", "cancelled"];
+        self.status
+            .as_ref()
+            .is_some_and(|s| CLOSED_KEYS.contains(&s.key.to_lowercase().as_str()))
+    }
+
     pub fn status_display(&self) -> &str {
         self.status
             .as_ref()
@@ -132,4 +146,53 @@ pub fn parse_dt(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
     chrono::DateTime::parse_from_rfc3339(s)
         .or_else(|_| chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%z"))
         .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn issue_with_status(key: &str) -> Issue {
+        serde_json::from_value(serde_json::json!({ "key": "ADS-1", "status": { "key": key } }))
+            .unwrap()
+    }
+
+    #[test]
+    fn closed_status_keys() {
+        for key in [
+            "done",
+            "closed",
+            "resolved",
+            "canceled",
+            "cancelled",
+            "Done",
+        ] {
+            assert!(issue_with_status(key).is_closed(), "{key} should be closed");
+        }
+    }
+
+    #[test]
+    fn active_status_keys_are_not_closed() {
+        // devDone/archandone-style keys must not substring-match "done"
+        for key in [
+            "open",
+            "backlog",
+            "review",
+            "devDone",
+            "development",
+            "readytorelease",
+        ] {
+            assert!(
+                !issue_with_status(key).is_closed(),
+                "{key} should not be closed"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_status_is_not_closed() {
+        let issue: Issue = serde_json::from_value(serde_json::json!({ "key": "ADS-1" })).unwrap();
+        assert!(!issue.is_closed());
+        assert!(!issue_with_status("").is_closed());
+    }
 }

@@ -46,6 +46,16 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
             true,
         ),
         ("Rounding mode", app.cfg.rounding.mode.to_string(), true),
+        (
+            "Hide closed tasks",
+            if app.cfg.hide_closed_tasks {
+                "on"
+            } else {
+                "off"
+            }
+            .to_string(),
+            true,
+        ),
         ("Re-login (device flow)", String::new(), true),
         ("Paste OAuth token…", String::new(), true),
         ("Logout", String::new(), true),

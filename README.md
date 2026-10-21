@@ -89,7 +89,9 @@ to the calendar's selected day · `a` search Tracker to add (`↑/↓ Enter`,
 `Esc` closes — the search covers your loaded issues and Tracker at large) ·
 `d` remove. Favorites are stored in the state file.
 **Tasks tile**: `j/k` select · `t` filter by issue type · `/` filter text ·
-`r` refresh · `Enter` start timer.
+`r` refresh · `Enter` start timer. By default only issues in open statuses
+are listed — closed ones (`done`, `canceled`, …) stay reachable through
+task search, and Settings → *Hide closed tasks* puts them back in the list.
 **Calendar tile**: `h/l` `j/k` move day · `[` `]` change month · `t` today ·
 `n` log time on the selected day · `r` reload · `Enter` day breakdown
 (`n` works from the breakdown too).
