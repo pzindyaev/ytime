@@ -56,6 +56,9 @@ pub struct TasksTile {
     pub issues: Vec<Issue>,
     pub filtered: Vec<Issue>,
     pub selected: usize,
+    /// First visible row of the list window, kept in step with `selected`
+    /// at render time (see `ui::list_scroll`).
+    pub scroll: usize,
     pub filter: TextInput,
     pub filter_active: bool,
     /// Active issue-type filter (type key, e.g. `bug`).
@@ -68,11 +71,12 @@ pub struct TasksTile {
 }
 
 impl TasksTile {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             issues: Vec::new(),
             filtered: Vec::new(),
             selected: 0,
+            scroll: 0,
             filter: TextInput::new(""),
             filter_active: false,
             type_filter: None,
@@ -333,6 +337,8 @@ pub struct App {
     pub settings_sel: usize,
     /// Selection in the favorites tile (the list itself is `state.favorites`).
     pub fav_sel: usize,
+    /// Scroll offset of the favorites list window (see `ui::list_scroll`).
+    pub fav_scroll: usize,
     /// Dropdown for the add-favorite search modal.
     pub fav_dd: Option<Dropdown>,
     pub fav_dirty: bool,
@@ -380,6 +386,7 @@ impl App {
             log: LogTile::new(),
             settings_sel: 0,
             fav_sel: 0,
+            fav_scroll: 0,
             fav_dd: None,
             fav_dirty: false,
             fav_last_edit: None,

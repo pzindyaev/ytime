@@ -4,8 +4,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph};
 use ratatui::Frame;
 
-use super::{dim, focus_border, input_spans, spinner, truncate};
-use crate::app::App;
+use super::{dim, focus_border, input_spans, list_scroll, scroll_title, spinner, truncate};
+use crate::app::TasksTile;
 
 pub(crate) fn type_color(key: &str) -> Color {
     match key {
@@ -18,29 +18,30 @@ pub(crate) fn type_color(key: &str) -> Color {
     }
 }
 
-pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
-    let t = &app.tasks;
+pub fn draw(t: &mut TasksTile, tick: usize, f: &mut Frame, area: Rect, focused: bool) {
     let mut title = String::from(" 2· My tasks");
     if let Some(d) = t.type_filter_display() {
         title.push_str(&format!(" · {d}"));
     }
     if !t.filter.value.trim().is_empty() {
-        title.push_str(&format!(" · /{}", t.filter.value.trim()));
+        title.push_str(&format!(" /{}", t.filter.value.trim()));
     }
     title.push_str(&format!(" ({})", t.filtered.len()));
     let title = if t.loading {
-        format!(" 2· My tasks {} ", spinner(app.tick))
+        format!(" 2· My tasks {} ", spinner(tick))
     } else {
         format!("{title} ")
     };
-    let block = Block::bordered()
-        .title(Span::styled(title, Style::default().fg(Color::Cyan)))
-        .border_style(focus_border(focused));
+    let block = Block::bordered().border_style(focus_border(focused));
     let inner = block.inner(area);
-    f.render_widget(block, area);
-
     let [list_area, filter_area] =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(inner);
+
+    let height = usize::from(list_area.height);
+    let len = t.filtered.len();
+    t.scroll = list_scroll(t.scroll, t.selected, len, height);
+    let block = block.title(scroll_title(&title, t.scroll, t.scroll + height < len));
+    f.render_widget(block, area);
 
     let width = usize::from(list_area.width.saturating_sub(1));
     let key_w = t
@@ -68,7 +69,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
 
     let lines: Vec<Line> = if t.loading && t.issues.is_empty() {
         vec![Line::from(Span::styled(
-            format!("{} loading issues…", spinner(app.tick)),
+            format!("{} loading issues…", spinner(tick)),
             dim(),
         ))]
     } else if let Some(err) = &t.error {
@@ -92,6 +93,8 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         t.filtered
             .iter()
             .enumerate()
+            .skip(t.scroll)
+            .take(height)
             .map(|(i, issue)| {
                 let selected = i == t.selected;
                 let base = if selected {
@@ -146,4 +149,60 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
         Line::from("")
     };
     f.render_widget(Paragraph::new(filter_line), filter_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::models::Issue;
+    use ratatui::backend::TestBackend;
+
+    fn tile(n: usize) -> TasksTile {
+        let mut t = TasksTile::new();
+        t.issues = (0..n)
+            .map(|i| Issue {
+                key: format!("K-{i:03}"),
+                summary: format!("sum {i}"),
+                ..Default::default()
+            })
+            .collect();
+        t.refresh_filter();
+        t
+    }
+
+    fn rendered(t: &mut TasksTile, w: u16, h: u16) -> String {
+        let mut term = ratatui::Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| draw(t, 0, f, f.area(), true)).unwrap();
+        let buf = term.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn selection_below_the_fold_scrolls_into_view() {
+        // 12 rows → 9 list rows; 30 issues, cursor on the last one
+        let mut t = tile(30);
+        t.selected = 29;
+        let screen = rendered(&mut t, 60, 12);
+        assert!(screen.contains("K-029"), "selected row must be on screen");
+        assert!(screen.contains("↑"), "more-above marker expected");
+        assert!(
+            !screen.contains("K-000"),
+            "window should have scrolled off the top"
+        );
+    }
+
+    #[test]
+    fn short_list_never_scrolls_and_marks_below() {
+        let mut t = tile(3);
+        let screen = rendered(&mut t, 60, 12);
+        assert!(screen.contains("K-000") && screen.contains("K-002"));
+        assert!(!screen.contains("↑") && !screen.contains("↓"));
+    }
 }

@@ -111,6 +111,41 @@ pub fn dropdown_window(selected: usize, visible: usize) -> usize {
     selected.saturating_sub(visible - 1)
 }
 
+/// Scroll offset of a `visible`-row window over `len` rows that keeps
+/// `selected` on screen: unchanged while the selection stays inside the
+/// window, follows one line at a time past either edge, and clamps when
+/// the list or the terminal shrinks.
+pub fn list_scroll(scroll: usize, selected: usize, len: usize, visible: usize) -> usize {
+    if visible == 0 || len == 0 {
+        return 0;
+    }
+    let max = len.saturating_sub(visible);
+    let s = scroll.min(max);
+    if selected < s {
+        selected.min(max)
+    } else if selected >= s + visible {
+        selected + 1 - visible
+    } else {
+        s
+    }
+}
+
+/// Tile border title: `text` in cyan plus muted ↑/↓ markers when the scroll
+/// window doesn't cover the whole list.
+pub fn scroll_title(text: &str, scroll: usize, more_below: bool) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        text.to_string(),
+        Style::default().fg(Color::Cyan),
+    )];
+    if scroll > 0 {
+        spans.push(Span::styled(" ↑", dim()));
+    }
+    if more_below {
+        spans.push(Span::styled(" ↓", dim()));
+    }
+    Line::from(spans)
+}
+
 /// Display width of a rendered hints line.
 pub fn hints_width(pairs: &[(&str, &str)]) -> usize {
     pairs
@@ -314,5 +349,22 @@ mod tests {
         assert_eq!(hints_width(&[]), 0);
         assert_eq!(hints_width(&[("s", "stop")]), 6);
         assert_eq!(hints_width(&[("s", "stop"), ("q", "quit")]), 14);
+    }
+
+    #[test]
+    fn list_scroll_follows_selection_and_clamps() {
+        // everything fits: never scrolls
+        assert_eq!(list_scroll(0, 9, 10, 10), 0);
+        // selection inside the window: offset stays put
+        assert_eq!(list_scroll(5, 7, 20, 10), 5);
+        // past the bottom fold: follows one line at a time
+        assert_eq!(list_scroll(0, 10, 20, 10), 1);
+        assert_eq!(list_scroll(10, 19, 20, 10), 10);
+        // above the window: pulled up to the selection
+        assert_eq!(list_scroll(10, 9, 20, 10), 9);
+        // stale offset clamps when the list or terminal shrinks
+        assert_eq!(list_scroll(8, 0, 12, 10), 0);
+        assert_eq!(list_scroll(8, 11, 12, 10), 2);
+        assert_eq!(list_scroll(3, 1, 5, 0), 0);
     }
 }

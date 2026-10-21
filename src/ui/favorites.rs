@@ -4,20 +4,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 
-use super::{centered, dim, focus_border, input_spans, spinner, truncate};
+use super::{
+    centered, dim, focus_border, input_spans, list_scroll, scroll_title, spinner, truncate,
+};
 use crate::app::App;
 
-pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
-    let favs = &app.state.favorites;
-    let block = Block::bordered()
-        .title(Span::styled(
-            format!(" 1· Favorites ({}) ", favs.len()),
-            Style::default().fg(Color::Cyan),
-        ))
-        .border_style(focus_border(focused));
+pub fn draw(app: &mut App, f: &mut Frame, area: Rect, focused: bool) {
+    let block = Block::bordered().border_style(focus_border(focused));
     let inner = block.inner(area);
+    let height = usize::from(inner.height);
+    let len = app.state.favorites.len();
+    let sel = app.fav_sel.min(len.saturating_sub(1));
+    app.fav_scroll = list_scroll(app.fav_scroll, sel, len, height);
+    let block = block.title(scroll_title(
+        &format!(" 1· Favorites ({len}) "),
+        app.fav_scroll,
+        app.fav_scroll + height < len,
+    ));
     f.render_widget(block, area);
 
+    let favs = &app.state.favorites;
     let width = usize::from(inner.width.saturating_sub(1));
     let lines: Vec<Line> = if favs.is_empty() {
         vec![Line::from(Span::styled(
@@ -27,8 +33,10 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect, focused: bool) {
     } else {
         favs.iter()
             .enumerate()
+            .skip(app.fav_scroll)
+            .take(height)
             .map(|(i, issue)| {
-                let selected = i == app.fav_sel.min(favs.len().saturating_sub(1));
+                let selected = i == sel;
                 let base = if selected {
                     Style::default()
                         .fg(Color::Yellow)
