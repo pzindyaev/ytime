@@ -5,12 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::models::Issue;
 
-/// OAuth tokens, persisted with 0600 permissions.
+/// OAuth token, persisted with 0600 permissions.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Tokens {
     pub access_token: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<String>,
 }
 
 /// A timer that survives app restarts.

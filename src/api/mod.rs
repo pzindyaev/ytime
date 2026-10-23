@@ -1,9 +1,6 @@
 pub mod models;
 
-use std::sync::Arc;
-
 use chrono::{DateTime, Local, NaiveDate};
-use tokio::sync::RwLock;
 
 use crate::config::OrgHeader;
 use models::{Issue, User, WorklogPost, WorklogRecord};
@@ -70,7 +67,7 @@ pub type ApiResult<T> = Result<T, ApiError>;
 pub struct TrackerClient {
     http: reqwest::Client,
     base: String,
-    token: Arc<RwLock<String>>,
+    token: String,
     org_id: String,
     header: OrgHeader,
 }
@@ -84,18 +81,10 @@ impl TrackerClient {
                 .build()
                 .expect("reqwest client"),
             base,
-            token: Arc::new(RwLock::new(token)),
+            token,
             org_id,
             header,
         }
-    }
-
-    pub async fn update_token(&self, token: String) {
-        *self.token.write().await = token;
-    }
-
-    pub async fn token(&self) -> String {
-        self.token.read().await.clone()
     }
 
     fn auth_value(&self, token: &str) -> String {
@@ -114,7 +103,7 @@ impl TrackerClient {
     }
 
     pub async fn myself(&self) -> ApiResult<User> {
-        let token = self.token().await;
+        let token = self.token.clone();
         let req = self
             .http
             .get(format!("{}/v2/myself", self.base))
@@ -128,7 +117,7 @@ impl TrackerClient {
     /// fetched directly and pinned to the top: the text search tokenizes keys
     /// on the hyphen and returns lookalikes instead of the issue itself.
     pub async fn issues(&self, query: &str, max_pages: u32) -> ApiResult<Vec<Issue>> {
-        let token = self.token().await;
+        let token = self.token.clone();
         let mut exact: Vec<Issue> = Vec::new();
         if let Some(key) = issue_key_form(query) {
             let req = self
@@ -186,7 +175,7 @@ impl TrackerClient {
         duration: std::time::Duration,
         comment: &str,
     ) -> ApiResult<()> {
-        let token = self.token().await;
+        let token = self.token.clone();
         let body = WorklogPost {
             // Tracker's own wire format, e.g. `2026-10-20T11:45:00.123+0300`.
             start: start.format("%Y-%m-%dT%H:%M:%S%.3f%z").to_string(),
@@ -216,7 +205,7 @@ impl TrackerClient {
         from: NaiveDate,
         to: NaiveDate,
     ) -> ApiResult<Vec<WorklogRecord>> {
-        let token = self.token().await;
+        let token = self.token.clone();
         // Docs' example format: `2018-06-06T08:42:15.258`, local time, no offset.
         let fmt = |d: NaiveDate| format!("{}T00:00:00.000", d.format("%Y-%m-%d"));
         let body = serde_json::json!({

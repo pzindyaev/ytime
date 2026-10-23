@@ -29,7 +29,6 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
     };
     let rows: Vec<(&str, String, bool)> = vec![
         ("OAuth client_id", mask(&app.cfg.client_id), true),
-        ("OAuth client_secret", mask(&app.cfg.client_secret), true),
         ("Organization id", mask(&app.cfg.org_id), true),
         (
             "Org header",
@@ -56,8 +55,7 @@ pub fn draw(app: &App, f: &mut Frame, area: Rect) {
             .to_string(),
             true,
         ),
-        ("Re-login (device flow)", String::new(), true),
-        ("Paste OAuth token…", String::new(), true),
+        ("Authorize (paste token)…", String::new(), true),
         ("Logout", String::new(), true),
     ];
 

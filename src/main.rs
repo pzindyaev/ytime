@@ -1,6 +1,5 @@
 mod api;
 mod app;
-mod auth;
 mod calendar;
 mod config;
 mod input;
@@ -28,8 +27,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the OAuth device flow in the console (no TUI).
-    Auth,
+    /// Authorize by pasting a personal OAuth token (no TUI).
+    Auth {
+        /// Token value; skips the link/stdin prompt (for scripts).
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// Delete the stored OAuth token.
     Logout,
 }
@@ -40,35 +43,49 @@ fn main() -> anyhow::Result<()> {
     let mut state = PersistedState::load();
 
     match cli.cmd {
-        Some(Cmd::Auth) => {
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(async {
-                let client_id = cfg
-                    .client_id
-                    .clone()
-                    .filter(|id| !id.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "client_id is not set.\n\
-                             Register an app at https://oauth.yandex.ru/client/new\n\
-                             (platform: «Устройства» / device flow) and put the id into {}",
-                            Config::path().display()
-                        )
-                    })?;
-                let tokens = auth::run_console_flow(
-                    &cfg.oauth_base,
-                    &client_id,
-                    cfg.client_secret.as_deref(),
-                )
-                .await?;
-                state.tokens = Some(tokens.into());
-                state.save()?;
-                println!(
-                    "Token saved to {} — run `ytime` to start tracking.",
-                    config::state_path().display()
-                );
-                anyhow::Ok(())
-            })
+        Some(Cmd::Auth { token }) => {
+            let token = match token {
+                Some(t) => t,
+                None => {
+                    let client_id = cfg
+                        .client_id
+                        .clone()
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "client_id is not set.\n\
+                                 Register an app at https://oauth.yandex.ru/client/new \
+                                 (Callback URI: https://oauth.yandex.ru/verification_code, \
+                                 scopes: tracker:read, tracker:write) and put the id into {}",
+                                Config::path().display()
+                            )
+                        })?;
+                    println!(
+                        "Open this link and allow access:\n\
+                         {}/authorize?response_type=token&client_id={client_id}",
+                        cfg.oauth_base
+                    );
+                    print!("Paste the token: ");
+                    use std::io::Write as _;
+                    std::io::stdout().flush()?;
+                    let mut buf = String::new();
+                    std::io::stdin().read_line(&mut buf)?;
+                    let t = buf.trim().to_string();
+                    if t.is_empty() {
+                        anyhow::bail!("empty token");
+                    }
+                    t
+                }
+            };
+            state.tokens = Some(store::Tokens {
+                access_token: token,
+            });
+            state.save()?;
+            println!(
+                "Token saved to {} — run `ytime` to start tracking.",
+                config::state_path().display()
+            );
+            Ok(())
         }
         Some(Cmd::Logout) => {
             state.tokens = None;

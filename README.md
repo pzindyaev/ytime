@@ -36,26 +36,24 @@ shows what the focused tile or dialog can do (`?` opens the full help).
   `45m`, `1.5h`, `1:30`, bare number = hours) and a note. Field values are
   kept between entries, so logging several days in a row is quick.
 - **Calendar** — hours logged per day with a per-day breakdown popup, a
-  "today" summary, and the log form right on the selected day.
-- **OAuth 2.0** — Yandex device authorization flow in-app (plus manual token
-  paste and automatic token refresh).
+  "today" summary, and `n` to log time on the selected day.
+- **OAuth 2.0** — personal Yandex token, pasted once (in-app onboarding or
+  `ytime auth`); the token lives up to a year, no refresh needed.
 
 ## Setup
 
 ### 1. Register an OAuth app (once)
 
 1. Open <https://oauth.yandex.ru/client/new> and log in.
-2. Name the app (e.g. `ytime`).
-3. Platform: **Устройства / Devices** (device authorization code flow).
-   No redirect URI is needed.
-4. Submit — you'll get an application ID (`client_id`) and a **secret**
-   (`client_secret`, shown as «Секрет»). Yandex requires the secret when
-   exchanging the device code for a token.
+2. Name the app (e.g. `ytime`) — any platform works, no secret is needed.
+3. Callback URI: `https://oauth.yandex.ru/verification_code`.
+4. Grant the `tracker:read` and `tracker:write` scopes.
+5. Submit — you'll get an application ID (`client_id`).
 
 The first run of `ytime` walks you through this and asks for the `client_id`,
-the `client_secret`, your organization id (Tracker → **Administration →
-Organizations → ID**), and then opens the device flow: open the shown URL,
-enter the shown code, allow access. That's it.
+your organization id (Tracker → **Administration → Organizations → ID**), and
+then shows an authorization link: open it in the browser, allow access, and
+paste the token back into the app. That's it.
 
 > **Note for org admins**: access to the Tracker API via OAuth may require
 > the app to be allowed by your organization's policy. If the connection
@@ -70,8 +68,9 @@ cargo run            # or: cargo build --release && ./target/release/ytime
 Headless alternatives:
 
 ```sh
-ytime auth     # run the device flow in the console, without the TUI
-ytime logout   # forget the stored token
+ytime auth               # print the authorize link, paste the token (no TUI)
+ytime auth --token TOKEN # save a token directly (for scripts)
+ytime logout             # forget the stored token
 ```
 
 ## Keys
@@ -104,14 +103,12 @@ from the note field · in the task field type ≥ 3 chars for remote search,
 | Path                                | Contents                                    |
 |-------------------------------------|---------------------------------------------|
 | `~/.config/ytime/config.toml`       | client_id, org_id, rounding, org header     |
-| `~/.local/share/ytime/state.json`   | OAuth tokens (0600), running timer state    |
+| `~/.local/share/ytime/state.json`   | OAuth token (0600), running timer state     |
 
 ## Configuration reference
 
 ```toml
 client_id = "…"                  # OAuth application id
-client_secret = "…"              # app secret («Секрет») — required by Yandex
-                                 # for the device-flow token exchange
 org_id = "…"                     # Tracker organization id
 # org_header = "x-org-id"        # or "x-cloud-org-id"; omit for auto-detect
 

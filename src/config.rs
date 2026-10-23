@@ -89,9 +89,6 @@ impl RoundingConfig {
 pub struct Config {
     /// OAuth application id registered at https://oauth.yandex.ru
     pub client_id: Option<String>,
-    /// App secret — Yandex requires it at the token exchange for most
-    /// registered apps ("Wrong client secret" otherwise).
-    pub client_secret: Option<String>,
     /// Organization id (Tracker → Administration → Organizations).
     pub org_id: Option<String>,
     pub rounding: RoundingConfig,
@@ -107,7 +104,6 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             client_id: None,
-            client_secret: None,
             org_id: None,
             rounding: RoundingConfig::default(),
             org_header: None,

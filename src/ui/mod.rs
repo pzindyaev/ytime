@@ -30,8 +30,9 @@ pub fn draw(app: &mut App, f: &mut Frame) {
     draw_status(app, f, status);
     modals::draw(app, f);
     if let Some(auth) = &app.auth {
-        let tick = app.tick;
-        modals::draw_onboarding(auth, f, tick);
+        let client_id = app.cfg.client_id.clone().unwrap_or_default();
+        let oauth_base = app.cfg.oauth_base.clone();
+        modals::draw_onboarding(auth, &client_id, &oauth_base, f);
     }
     draw_toast(app, f);
     draw_hints(app, f, hints);
@@ -226,11 +227,7 @@ fn draw_hints(app: &App, f: &mut Frame, area: Rect) {
 fn draw_status(app: &App, f: &mut Frame, area: Rect) {
     use ratatui::layout::Constraint;
 
-    let busy = app.tasks.loading
-        || !app.cal.loading.is_empty()
-        || app.log.busy
-        || app.detecting
-        || app.refreshing;
+    let busy = app.tasks.loading || !app.cal.loading.is_empty() || app.log.busy || app.detecting;
 
     let right = {
         let mut parts = Vec::new();

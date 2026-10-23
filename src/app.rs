@@ -3,11 +3,10 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use crate::api::models::{Issue, User, WorklogRecord};
 use crate::api::{detect_org_header, ApiResult, TrackerClient};
-use crate::auth::{self, AuthError, DeviceCode, PollOutcome, TokenResponse};
 use crate::calendar::{bucket_by_day, fetch_window, MonthData};
 use crate::config::{Config, OrgHeader};
 use crate::input::TextInput;
@@ -34,9 +33,6 @@ pub enum ApiMsg {
         month: (i32, u32),
         result: ApiResult<Vec<WorklogRecord>>,
     },
-    DeviceCode(Result<DeviceCode, AuthError>),
-    Token(Result<TokenResponse, AuthError>),
-    Refresh(Result<TokenResponse, AuthError>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,9 +225,7 @@ pub struct StopReview {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputTarget {
     ClientId,
-    ClientSecret,
     OrgId,
-    ManualToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,15 +306,13 @@ fn modal_kind(m: &Modal) -> ModalKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardStep {
     ClientId,
-    ClientSecret,
     OrgId,
-    WaitingCode,
+    Token,
 }
 
 pub struct OnboardState {
     pub step: OnboardStep,
     pub input: TextInput,
-    pub code: Option<DeviceCode>,
     pub error: Option<String>,
 }
 
@@ -351,9 +343,7 @@ pub struct App {
     pub tick: usize,
     pub auth: Option<OnboardState>,
     pub detecting: bool,
-    pub refreshing: bool,
     pub api_tx: mpsc::Sender<AppEvent>,
-    flow_cancel: Option<watch::Sender<bool>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -398,9 +388,7 @@ impl App {
             tick: 0,
             auth: None,
             detecting: false,
-            refreshing: false,
             api_tx,
-            flow_cancel: None,
         }
     }
 
@@ -427,93 +415,12 @@ impl App {
         } else if self.cfg.org_id.as_deref().is_none_or(str::is_empty) {
             OnboardStep::OrgId
         } else {
-            OnboardStep::WaitingCode
+            OnboardStep::Token
         };
-        self.cancel_flow();
         self.auth = Some(OnboardState {
             step,
             input: TextInput::new(""),
-            code: None,
             error: None,
-        });
-        if step == OnboardStep::WaitingCode {
-            self.start_device_flow();
-        }
-    }
-
-    fn cancel_flow(&mut self) {
-        if let Some(tx) = self.flow_cancel.take() {
-            let _ = tx.send(true);
-        }
-    }
-
-    fn start_device_flow(&mut self) {
-        self.cancel_flow();
-        let Some(client_id) = self.cfg.client_id.clone() else {
-            return;
-        };
-        let (cancel_tx, mut cancel_rx) = watch::channel(false);
-        self.flow_cancel = Some(cancel_tx);
-        if let Some(a) = &mut self.auth {
-            a.error = None;
-            a.code = None;
-        }
-        let tx = self.api_tx.clone();
-        let oauth_base = self.cfg.oauth_base.clone();
-        let client_secret = self.cfg.client_secret.clone();
-        tokio::spawn(async move {
-            let code = match auth::request_device_code(&oauth_base, &client_id).await {
-                Ok(c) => c,
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Api(ApiMsg::DeviceCode(Err(e)))).await;
-                    return;
-                }
-            };
-            let interval = code.interval.max(1);
-            let deadline = Instant::now() + Duration::from_secs(code.expires_in.unwrap_or(600));
-            let _ = tx
-                .send(AppEvent::Api(ApiMsg::DeviceCode(Ok(code.clone()))))
-                .await;
-            loop {
-                tokio::select! {
-                    _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
-                    _ = cancel_rx.changed() => return,
-                }
-                if Instant::now() > deadline {
-                    let _ = tx
-                        .send(AppEvent::Api(ApiMsg::Token(Err(AuthError::Oauth(
-                            "code expired".into(),
-                        )))))
-                        .await;
-                    return;
-                }
-                match auth::poll_token(
-                    &oauth_base,
-                    &client_id,
-                    client_secret.as_deref(),
-                    &code.device_code,
-                )
-                .await
-                {
-                    Ok(PollOutcome::Pending) => {}
-                    Ok(PollOutcome::Token(t)) => {
-                        let _ = tx.send(AppEvent::Api(ApiMsg::Token(Ok(t)))).await;
-                        return;
-                    }
-                    Ok(PollOutcome::Expired) | Ok(PollOutcome::Denied) => {
-                        let _ = tx
-                            .send(AppEvent::Api(ApiMsg::Token(Err(AuthError::Oauth(
-                                "code expired or denied".into(),
-                            )))))
-                            .await;
-                        return;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::Api(ApiMsg::Token(Err(e)))).await;
-                        return;
-                    }
-                }
-            }
         });
     }
 
@@ -588,13 +495,8 @@ impl App {
     /// tail is what gets dropped on narrow terminals). The onboarding
     /// overlay and the topmost modal win; then the focused tile/tab.
     pub fn key_hints(&self) -> Vec<(&'static str, &'static str)> {
-        if let Some(auth) = &self.auth {
-            return match auth.step {
-                OnboardStep::ClientId | OnboardStep::ClientSecret | OnboardStep::OrgId => {
-                    vec![("Enter", "continue"), ("Esc", "skip")]
-                }
-                OnboardStep::WaitingCode => vec![("r", "retry"), ("Esc", "cancel")],
-            };
+        if self.auth.is_some() {
+            return vec![("Enter", "continue"), ("Esc", "skip")];
         }
         if let Some(modal) = self.modals.last() {
             return match modal {
@@ -1383,7 +1285,7 @@ impl App {
     }
 
     fn settings_key(&mut self, key: KeyEvent) {
-        const ROWS: usize = 10;
+        const ROWS: usize = 8;
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.settings_sel = (self.settings_sel + 1).min(ROWS - 1);
@@ -1404,16 +1306,11 @@ impl App {
                 target: InputTarget::ClientId,
             }),
             1 => self.modals.push(Modal::Input {
-                title: "OAuth client_secret (Секрет)".into(),
-                input: TextInput::new(self.cfg.client_secret.clone().unwrap_or_default()),
-                target: InputTarget::ClientSecret,
-            }),
-            2 => self.modals.push(Modal::Input {
                 title: "Organization id".into(),
                 input: TextInput::new(self.cfg.org_id.clone().unwrap_or_default()),
                 target: InputTarget::OrgId,
             }),
-            3 => {
+            2 => {
                 self.cfg.org_header = match self.cfg.org_header {
                     None => Some(OrgHeader::XOrgId),
                     Some(OrgHeader::XOrgId) => Some(OrgHeader::XCloudOrgId),
@@ -1422,35 +1319,21 @@ impl App {
                 self.save_cfg();
                 self.reconnect();
             }
-            4 => {
+            3 => {
                 self.cfg.rounding.cycle_unit();
                 self.save_cfg();
             }
-            5 => {
+            4 => {
                 self.cfg.rounding.mode = self.cfg.rounding.mode.cycle();
                 self.save_cfg();
             }
-            6 => {
+            5 => {
                 self.cfg.hide_closed_tasks = !self.cfg.hide_closed_tasks;
                 self.tasks.hide_closed = self.cfg.hide_closed_tasks;
                 self.tasks.refresh_filter();
                 self.save_cfg();
             }
-            7 => {
-                if self.cfg.client_id.as_deref().is_none_or(str::is_empty) {
-                    self.modals.push(Modal::Error {
-                        title: "No client_id".into(),
-                        msg: "Set the OAuth client_id first (row 1).".into(),
-                    });
-                } else {
-                    self.open_onboarding();
-                }
-            }
-            8 => self.modals.push(Modal::Input {
-                title: "Paste OAuth token".into(),
-                input: TextInput::new(""),
-                target: InputTarget::ManualToken,
-            }),
+            6 => self.open_onboarding(),
             _ => self.modals.push(Modal::Confirm {
                 msg: "Delete the stored OAuth token and disconnect?".into(),
                 action: ConfirmAction::Logout,
@@ -1729,30 +1612,15 @@ impl App {
                 self.cfg.client_id = Some(value);
                 self.save_cfg();
             }
-            InputTarget::ClientSecret => {
-                self.cfg.client_secret = Some(value);
-                self.save_cfg();
-            }
             InputTarget::OrgId => {
                 self.cfg.org_id = Some(value);
                 self.save_cfg();
                 self.reconnect();
             }
-            InputTarget::ManualToken => {
-                self.state.tokens = Some(Tokens {
-                    access_token: value,
-                    refresh_token: None,
-                });
-                self.save_state();
-                self.cfg.org_header = None;
-                self.reconnect();
-                self.toast(ToastKind::Success, "token saved, connecting…");
-            }
         }
     }
 
     fn logout(&mut self) {
-        self.cancel_flow();
         self.state.tokens = None;
         self.save_state();
         self.client = None;
@@ -1835,144 +1703,70 @@ impl App {
         let Some(step) = self.auth.as_ref().map(|a| a.step) else {
             return;
         };
-        match step {
-            OnboardStep::ClientId | OnboardStep::ClientSecret | OnboardStep::OrgId => {
-                match key.code {
-                    KeyCode::Enter => {
-                        let value = self
-                            .auth
-                            .as_ref()
-                            .map(|a| a.input.value.trim().to_string())
-                            .unwrap_or_default();
-                        // the secret is optional — empty input just skips it
-                        if value.is_empty() && step != OnboardStep::ClientSecret {
-                            return;
-                        }
-                        match step {
-                            OnboardStep::ClientId => self.cfg.client_id = Some(value),
-                            // empty input skips without clobbering a saved secret
-                            OnboardStep::ClientSecret if !value.is_empty() => {
-                                self.cfg.client_secret = Some(value)
-                            }
-                            OnboardStep::ClientSecret => {}
-                            OnboardStep::OrgId => self.cfg.org_id = Some(value),
-                            OnboardStep::WaitingCode => {}
-                        }
+        match key.code {
+            KeyCode::Enter => {
+                let value = self
+                    .auth
+                    .as_ref()
+                    .map(|a| a.input.value.trim().to_string())
+                    .unwrap_or_default();
+                if value.is_empty() {
+                    return;
+                }
+                match step {
+                    OnboardStep::ClientId => {
+                        self.cfg.client_id = Some(value);
                         self.save_cfg();
                         if let Some(a) = &mut self.auth {
+                            a.step = OnboardStep::OrgId;
                             a.input.clear();
                             a.error = None;
                         }
-                        self.advance_onboarding();
                     }
-                    KeyCode::Esc => {
-                        self.auth = None;
-                    }
-                    _ => {
+                    OnboardStep::OrgId => {
+                        self.cfg.org_id = Some(value);
+                        self.save_cfg();
                         if let Some(a) = &mut self.auth {
-                            a.input.handle_key(key);
+                            a.step = OnboardStep::Token;
+                            a.input.clear();
+                            a.error = None;
                         }
                     }
+                    OnboardStep::Token => {
+                        self.state.tokens = Some(Tokens {
+                            access_token: value,
+                        });
+                        self.save_state();
+                        self.cfg.org_header = None;
+                        self.auth = None;
+                        self.spawn_detect();
+                        self.toast(ToastKind::Success, "token saved, connecting…");
+                    }
                 }
             }
-            OnboardStep::WaitingCode => match key.code {
-                KeyCode::Esc => {
-                    self.cancel_flow();
-                    self.auth = None;
+            KeyCode::Esc => {
+                self.auth = None;
+            }
+            _ => {
+                if let Some(a) = &mut self.auth {
+                    a.input.handle_key(key);
                 }
-                KeyCode::Char('r') => self.start_device_flow(),
-                _ => {}
-            },
-        }
-    }
-
-    fn advance_onboarding(&mut self) {
-        let next = match self.auth.as_ref().map(|a| a.step) {
-            Some(OnboardStep::ClientId) => Some(OnboardStep::ClientSecret),
-            Some(OnboardStep::ClientSecret)
-                if self.cfg.org_id.as_deref().is_none_or(str::is_empty) =>
-            {
-                Some(OnboardStep::OrgId)
             }
-            Some(OnboardStep::ClientSecret) | Some(OnboardStep::OrgId) => {
-                Some(OnboardStep::WaitingCode)
-            }
-            _ => None,
-        };
-        if let Some(next) = next {
-            if let Some(a) = &mut self.auth {
-                a.step = next;
-            }
-        }
-        if self
-            .auth
-            .as_ref()
-            .is_some_and(|a| a.step == OnboardStep::WaitingCode)
-        {
-            self.start_device_flow();
         }
     }
 
     // ----- api results -----
 
-    /// Reports an auth error on the onboarding screen (or as a toast when the
-    /// flow runs in the background), jumping to the secret step when Yandex
-    /// rejects the client credentials.
-    fn auth_error(&mut self, msg: String) {
-        let needs_secret = msg.starts_with("invalid_client");
-        if let Some(a) = &mut self.auth {
-            a.code = None;
-            if needs_secret {
-                a.step = OnboardStep::ClientSecret;
-                a.error = Some(
-                    "Yandex rejected the client credentials — the app needs its \
-                     client_secret (Секрет on the app page at oauth.yandex.ru). \
-                     Paste it below and press Enter"
-                        .to_string(),
-                );
-            } else {
-                a.error = Some(msg);
-            }
-        } else {
-            self.toast(ToastKind::Error, msg);
-        }
+    fn session_expired(&mut self) {
+        self.toast(
+            ToastKind::Error,
+            "session expired — please re-login (Settings → Authorize)",
+        );
+        self.open_onboarding();
     }
 
     async fn on_api(&mut self, msg: ApiMsg) {
         match msg {
-            ApiMsg::DeviceCode(res) => match res {
-                Ok(code) => {
-                    if let Some(a) = &mut self.auth {
-                        a.code = Some(code);
-                        a.error = None;
-                    }
-                }
-                Err(e) => self.auth_error(e.to_string()),
-            },
-            ApiMsg::Token(res) => {
-                self.cancel_flow();
-                match res {
-                    Ok(t) => {
-                        self.state.tokens = Some(t.into());
-                        self.save_state();
-                        self.auth = None;
-                        self.toast(ToastKind::Success, "authorized — connecting…");
-                        if self.cfg.org_id.as_deref().is_none_or(str::is_empty) {
-                            self.open_onboarding(); // asks for the org id
-                        } else {
-                            self.spawn_detect();
-                        }
-                    }
-                    Err(e) => {
-                        let hint = if self.auth.is_some() {
-                            format!("{} — press r to retry", e)
-                        } else {
-                            e.to_string()
-                        };
-                        self.auth_error(hint);
-                    }
-                }
-            }
             ApiMsg::Detected(res) => {
                 self.detecting = false;
                 match res {
@@ -1998,7 +1792,7 @@ impl App {
                     }
                     Err(e) => {
                         if e.is_unauthorized() {
-                            self.try_refresh();
+                            self.session_expired();
                         } else {
                             self.modals.push(Modal::Error {
                                 title: "Connection failed".into(),
@@ -2037,7 +1831,7 @@ impl App {
                     self.tasks.loading = false;
                     self.tasks.error = Some(e.to_string());
                     if e.is_unauthorized() {
-                        self.try_refresh();
+                        self.session_expired();
                     }
                 }
             },
@@ -2107,11 +1901,7 @@ impl App {
                             }
                         }
                         if e.is_unauthorized() {
-                            self.try_refresh();
-                            self.toast(
-                                ToastKind::Error,
-                                "session expired — refreshing token, then retry",
-                            );
+                            self.session_expired();
                         } else {
                             self.modals.push(Modal::Error {
                                 title: "Failed to log time".into(),
@@ -2132,66 +1922,12 @@ impl App {
                     Err(e) => {
                         self.cal.error = Some(e.to_string());
                         if e.is_unauthorized() {
-                            self.try_refresh();
+                            self.session_expired();
                         }
                     }
                 }
             }
-            ApiMsg::Refresh(res) => {
-                self.refreshing = false;
-                match res {
-                    Ok(t) => {
-                        self.state.tokens = Some(t.clone().into());
-                        self.save_state();
-                        if self.client.is_some() {
-                            let token = t.access_token.clone();
-                            if let Some(client) = &self.client {
-                                client.update_token(token).await;
-                            }
-                            self.toast(ToastKind::Info, "token refreshed");
-                            self.spawn_my_issues();
-                        } else {
-                            self.spawn_detect();
-                        }
-                    }
-                    Err(e) => {
-                        self.toast(
-                            ToastKind::Error,
-                            format!("token refresh failed ({e}) — please re-login"),
-                        );
-                        self.open_onboarding();
-                    }
-                }
-            }
         }
-    }
-
-    fn try_refresh(&mut self) {
-        if self.refreshing {
-            return;
-        }
-        let Some(tokens) = self.state.tokens.clone() else {
-            return;
-        };
-        let Some(refresh_token) = tokens.refresh_token.clone() else {
-            self.toast(ToastKind::Error, "session expired — please re-login");
-            self.open_onboarding();
-            return;
-        };
-        let Some(client_id) = self.cfg.client_id.clone() else {
-            self.toast(ToastKind::Error, "session expired — please re-login");
-            self.open_onboarding();
-            return;
-        };
-        self.refreshing = true;
-        let tx = self.api_tx.clone();
-        let oauth_base = self.cfg.oauth_base.clone();
-        let secret = self.cfg.client_secret.clone();
-        tokio::spawn(async move {
-            let res =
-                auth::refresh(&oauth_base, &client_id, secret.as_deref(), &refresh_token).await;
-            let _ = tx.send(AppEvent::Api(ApiMsg::Refresh(res))).await;
-        });
     }
 }
 

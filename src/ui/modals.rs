@@ -262,7 +262,7 @@ pub fn draw(app: &App, f: &mut Frame) {
     }
 }
 
-pub fn draw_onboarding(auth: &OnboardState, f: &mut Frame, tick: usize) {
+pub fn draw_onboarding(auth: &OnboardState, client_id: &str, oauth_base: &str, f: &mut Frame) {
     match auth.step {
         OnboardStep::ClientId => {
             let body = vec![
@@ -277,15 +277,22 @@ pub fn draw_onboarding(auth: &OnboardState, f: &mut Frame, tick: usize) {
                     ),
                 ]),
                 line(
-                    "2. name it, choose the platform «Устройства / Devices»",
+                    "2. name it, any platform works (no secret needed)",
+                    Color::DarkGray,
+                ),
+                Line::from(vec![
+                    Span::styled("3. Callback URI: ", dim()),
+                    Span::styled(
+                        "https://oauth.yandex.ru/verification_code",
+                        Style::default().fg(Color::Cyan),
+                    ),
+                ]),
+                line(
+                    "4. grant the tracker:read and tracker:write scopes",
                     Color::DarkGray,
                 ),
                 line(
-                    "3. no redirect URI or access checkboxes are needed",
-                    Color::DarkGray,
-                ),
-                line(
-                    "4. copy the application id (client_id) below:",
+                    "5. copy the application id (client_id) below:",
                     Color::DarkGray,
                 ),
                 line("", Color::Reset),
@@ -304,42 +311,7 @@ pub fn draw_onboarding(auth: &OnboardState, f: &mut Frame, tick: usize) {
                 f,
                 64,
                 body.len() as u16 + 2,
-                " Welcome — OAuth setup (1/4) ",
-                body,
-            );
-        }
-        OnboardStep::ClientSecret => {
-            let body = vec![
-                line("The app's client secret (Секрет).", Color::White),
-                Line::from(Span::styled(
-                    "On oauth.yandex.ru open your app — the secret is shown next to the ID.",
-                    dim(),
-                )),
-                line(
-                    "Yandex requires it when exchanging the device code for a token.",
-                    Color::DarkGray,
-                ),
-                line(
-                    "Leave empty if your app was registered without one.",
-                    Color::DarkGray,
-                ),
-                line("", Color::Reset),
-                Line::from(input_spans(
-                    &auth.input,
-                    Style::default().fg(Color::White),
-                    Style::default().bg(Color::Yellow).fg(Color::Black),
-                )),
-                line("", Color::Reset),
-                line(
-                    "Enter: continue (empty = skip) · Esc: skip",
-                    Color::DarkGray,
-                ),
-            ];
-            popup(
-                f,
-                64,
-                body.len() as u16 + 2,
-                " Welcome — client secret (2/4) ",
+                " Welcome — OAuth setup (1/3) ",
                 body,
             );
         }
@@ -364,54 +336,41 @@ pub fn draw_onboarding(auth: &OnboardState, f: &mut Frame, tick: usize) {
                 f,
                 64,
                 body.len() as u16 + 2,
-                " Welcome — organization (3/4) ",
+                " Welcome — organization (2/3) ",
                 body,
             );
         }
-        OnboardStep::WaitingCode => {
-            let mut body = Vec::new();
-            match &auth.code {
-                Some(code) => {
-                    body.push(Line::from(vec![
-                        Span::styled("open  ", dim()),
-                        Span::styled(
-                            code.verification_url.clone(),
-                            Style::default()
-                                .fg(Color::Cyan)
-                                .add_modifier(Modifier::UNDERLINED),
-                        ),
-                    ]));
-                    body.push(line("and enter this code:", Color::DarkGray));
-                    body.push(line("", Color::Reset));
-                    body.push(Line::from(Span::styled(
-                        code.user_code.clone(),
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    body.push(line("", Color::Reset));
-                    body.push(line(
-                        format!("{} waiting for authorization…", spinner(tick)),
-                        Color::Cyan,
-                    ));
-                }
-                None => {
-                    // nothing is in flight when an error is on screen
-                    if auth.error.is_none() {
-                        body.push(line(
-                            format!("{} requesting a device code…", spinner(tick)),
-                            Color::Cyan,
-                        ));
-                    }
-                }
-            }
+        OnboardStep::Token => {
+            let url = format!("{oauth_base}/authorize?response_type=token&client_id={client_id}");
+            let mut body = vec![
+                line("Open this link and allow access:", Color::White),
+                Line::from(Span::styled(
+                    url.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::UNDERLINED),
+                )),
+                line(
+                    "then paste the token (the access_token value) below:",
+                    Color::DarkGray,
+                ),
+                line("", Color::Reset),
+                Line::from(input_spans(
+                    &auth.input,
+                    Style::default().fg(Color::White),
+                    Style::default().bg(Color::Yellow).fg(Color::Black),
+                )),
+            ];
             if let Some(err) = &auth.error {
                 body.push(line("", Color::Reset));
                 body.push(line(format!("error: {err}"), Color::Red));
             }
             body.push(line("", Color::Reset));
-            body.push(line("Esc: cancel · r: retry", Color::DarkGray));
-            popup(f, 60, body.len() as u16 + 2, " Authorization (4/4) ", body);
+            body.push(line("Enter: save · Esc: cancel", Color::DarkGray));
+            // the popup must fit the full authorize link — a clipped URL is
+            // what terminals hand to the browser on click
+            let w = (url.len() as u16 + 4).max(64);
+            popup(f, w, body.len() as u16 + 2, " Authorization (3/3) ", body);
         }
     }
 }
